@@ -1,0 +1,4 @@
+# flags for the checkout service
+flag new-checkout: on, rollout=25, rules=[env=staging, plan=enterprise]
+flag legacy-search: off
+flag dark-mode: on, rollout=100
