@@ -60,9 +60,10 @@ Given `flag a:on,rollout=10,rules=[env=prod,plan=pro]`, `fmt` produces
 
 ## Status
 
-This is a first pass. `fmt` currently drops comments and blank lines rather
-than preserving them, and there's no way to write formatted output back to
-the file in place. See the roadmap in the commit history for what's next.
+This is a first pass. `fmt` preserves comments and blank lines in place, but
+there's no way to write formatted output back to the file directly; you have
+to redirect stdout yourself. See the roadmap in the commit history for what's
+next.
 
 ## License
 

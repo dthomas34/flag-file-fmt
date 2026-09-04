@@ -18,6 +18,15 @@ struct Flag {
     rules: Vec<Rule>,
 }
 
+// One entry per source line, in file order, so formatting can reproduce the
+// author's comments and paragraph breaks instead of collapsing them away.
+#[derive(Debug, Clone)]
+enum Entry {
+    Blank,
+    Comment(String),
+    Flag(Flag),
+}
+
 #[derive(Debug)]
 struct ParseError {
     line: usize,
@@ -72,14 +81,19 @@ fn split_top_level(s: &str, delim: char) -> Vec<String> {
     parts
 }
 
-fn parse(source: &str) -> Result<Vec<Flag>, ParseError> {
-    let mut flags = Vec::new();
+fn parse(source: &str) -> Result<Vec<Entry>, ParseError> {
+    let mut entries = Vec::new();
     let mut seen = HashSet::new();
 
     for (idx, raw_line) in source.lines().enumerate() {
         let line_no = idx + 1;
         let line = raw_line.trim();
-        if line.is_empty() || line.starts_with('#') {
+        if line.is_empty() {
+            entries.push(Entry::Blank);
+            continue;
+        }
+        if line.starts_with('#') {
+            entries.push(Entry::Comment(line.to_string()));
             continue;
         }
 
@@ -164,30 +178,41 @@ fn parse(source: &str) -> Result<Vec<Flag>, ParseError> {
             }
         }
 
-        flags.push(Flag { name, enabled, rollout, rules });
+        entries.push(Entry::Flag(Flag { name, enabled, rollout, rules }));
     }
 
-    Ok(flags)
+    Ok(entries)
 }
 
-fn format_flags(flags: &[Flag]) -> String {
+fn format_flag(flag: &Flag, out: &mut String) {
+    out.push_str("flag ");
+    out.push_str(&flag.name);
+    out.push_str(": ");
+    out.push_str(if flag.enabled { "on" } else { "off" });
+    if let Some(r) = flag.rollout {
+        out.push_str(&format!(", rollout={}", r));
+    }
+    if !flag.rules.is_empty() {
+        out.push_str(", rules=[");
+        let parts: Vec<String> =
+            flag.rules.iter().map(|r| format!("{}={}", r.key, r.value)).collect();
+        out.push_str(&parts.join(", "));
+        out.push(']');
+    }
+    out.push('\n');
+}
+
+fn format_entries(entries: &[Entry]) -> String {
     let mut out = String::new();
-    for flag in flags {
-        out.push_str("flag ");
-        out.push_str(&flag.name);
-        out.push_str(": ");
-        out.push_str(if flag.enabled { "on" } else { "off" });
-        if let Some(r) = flag.rollout {
-            out.push_str(&format!(", rollout={}", r));
+    for entry in entries {
+        match entry {
+            Entry::Blank => out.push('\n'),
+            Entry::Comment(c) => {
+                out.push_str(c);
+                out.push('\n');
+            }
+            Entry::Flag(flag) => format_flag(flag, &mut out),
         }
-        if !flag.rules.is_empty() {
-            out.push_str(", rules=[");
-            let parts: Vec<String> =
-                flag.rules.iter().map(|r| format!("{}={}", r.key, r.value)).collect();
-            out.push_str(&parts.join(", "));
-            out.push(']');
-        }
-        out.push('\n');
     }
     out
 }
@@ -210,8 +235,8 @@ fn main() {
         }
     };
 
-    let flags = match parse(&source) {
-        Ok(f) => f,
+    let entries = match parse(&source) {
+        Ok(e) => e,
         Err(e) => {
             eprintln!("{}: {}", path, e);
             process::exit(1);
@@ -219,8 +244,11 @@ fn main() {
     };
 
     match command.as_str() {
-        "check" => println!("{}: {} flag(s) OK", path, flags.len()),
-        "fmt" => print!("{}", format_flags(&flags)),
+        "check" => {
+            let count = entries.iter().filter(|e| matches!(e, Entry::Flag(_))).count();
+            println!("{}: {} flag(s) OK", path, count);
+        }
+        "fmt" => print!("{}", format_entries(&entries)),
         other => {
             eprintln!("unknown command '{}', expected 'check' or 'fmt'", other);
             process::exit(2);
@@ -232,9 +260,20 @@ fn main() {
 mod tests {
     use super::*;
 
+    fn flags_only(entries: &[Entry]) -> Vec<&Flag> {
+        entries
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Flag(f) => Some(f),
+                _ => None,
+            })
+            .collect()
+    }
+
     #[test]
     fn parses_minimal_flag() {
-        let flags = parse("flag dark-mode: on\n").unwrap();
+        let entries = parse("flag dark-mode: on\n").unwrap();
+        let flags = flags_only(&entries);
         assert_eq!(flags.len(), 1);
         assert_eq!(flags[0].name, "dark-mode");
         assert!(flags[0].enabled);
@@ -245,7 +284,8 @@ mod tests {
     #[test]
     fn parses_full_flag() {
         let src = "flag new-checkout: on, rollout=25, rules=[env=staging, plan=enterprise]\n";
-        let flags = parse(src).unwrap();
+        let entries = parse(src).unwrap();
+        let flags = flags_only(&entries);
         assert_eq!(flags[0].rollout, Some(25));
         assert_eq!(flags[0].rules.len(), 2);
         assert_eq!(flags[0].rules[0].key, "env");
@@ -277,23 +317,39 @@ mod tests {
     }
 
     #[test]
-    fn skips_comments_and_blank_lines() {
+    fn keeps_comments_and_blank_lines_as_entries() {
         let src = "# a comment\n\nflag a: on\n";
-        let flags = parse(src).unwrap();
-        assert_eq!(flags.len(), 1);
+        let entries = parse(src).unwrap();
+        assert_eq!(entries.len(), 3);
+        assert!(matches!(&entries[0], Entry::Comment(c) if c == "# a comment"));
+        assert!(matches!(entries[1], Entry::Blank));
+        assert!(matches!(&entries[2], Entry::Flag(f) if f.name == "a"));
     }
 
     #[test]
     fn format_round_trips_canonical_input() {
         let src = "flag a: on, rollout=10, rules=[env=prod]\n";
-        let flags = parse(src).unwrap();
-        assert_eq!(format_flags(&flags), src);
+        let entries = parse(src).unwrap();
+        assert_eq!(format_entries(&entries), src);
     }
 
     #[test]
     fn format_normalizes_loose_spacing() {
         let src = "flag a:on,rollout=10,rules=[env=prod,plan=pro]\n";
-        let flags = parse(src).unwrap();
-        assert_eq!(format_flags(&flags), "flag a: on, rollout=10, rules=[env=prod, plan=pro]\n");
+        let entries = parse(src).unwrap();
+        assert_eq!(
+            format_entries(&entries),
+            "flag a: on, rollout=10, rules=[env=prod, plan=pro]\n"
+        );
+    }
+
+    #[test]
+    fn format_preserves_comments_and_blank_lines() {
+        let src = "# checkout flags\n\nflag a:on\n# trailing note\n";
+        let entries = parse(src).unwrap();
+        assert_eq!(
+            format_entries(&entries),
+            "# checkout flags\n\nflag a: on\n# trailing note\n"
+        );
     }
 }
