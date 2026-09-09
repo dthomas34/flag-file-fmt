@@ -217,15 +217,42 @@ fn format_entries(entries: &[Entry]) -> String {
     out
 }
 
+fn usage(prog: &str) -> String {
+    format!("usage: {} <check|fmt> [--write] <path>", prog)
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
-    if args.len() != 3 {
-        let prog = args.get(0).map(String::as_str).unwrap_or("flagfmt");
-        eprintln!("usage: {} <check|fmt> <path>", prog);
+    let prog = args.get(0).map(String::as_str).unwrap_or("flagfmt");
+    if args.len() < 3 {
+        eprintln!("{}", usage(prog));
         process::exit(2);
     }
-    let command = &args[1];
-    let path = &args[2];
+    let command = args[1].clone();
+
+    let mut write_in_place = false;
+    let mut path: Option<&str> = None;
+    for arg in &args[2..] {
+        if arg == "--write" {
+            write_in_place = true;
+        } else if path.is_none() {
+            path = Some(arg);
+        } else {
+            eprintln!("{}", usage(prog));
+            process::exit(2);
+        }
+    }
+    let path = match path {
+        Some(p) => p,
+        None => {
+            eprintln!("{}", usage(prog));
+            process::exit(2);
+        }
+    };
+    if write_in_place && command != "fmt" {
+        eprintln!("--write is only valid with 'fmt'");
+        process::exit(2);
+    }
 
     let source = match fs::read_to_string(path) {
         Ok(s) => s,
@@ -248,7 +275,17 @@ fn main() {
             let count = entries.iter().filter(|e| matches!(e, Entry::Flag(_))).count();
             println!("{}: {} flag(s) OK", path, count);
         }
-        "fmt" => print!("{}", format_entries(&entries)),
+        "fmt" => {
+            let formatted = format_entries(&entries);
+            if write_in_place {
+                if let Err(e) = fs::write(path, &formatted) {
+                    eprintln!("failed to write {}: {}", path, e);
+                    process::exit(2);
+                }
+            } else {
+                print!("{}", formatted);
+            }
+        }
         other => {
             eprintln!("unknown command '{}', expected 'check' or 'fmt'", other);
             process::exit(2);

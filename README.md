@@ -55,15 +55,21 @@ cargo run -- fmt flags.txt > flags.fmt.txt
 diff flags.txt flags.fmt.txt
 ```
 
+Pass `--write` to reformat the file in place instead:
+
+```
+cargo run -- fmt --write flags.txt
+```
+
 Given `flag a:on,rollout=10,rules=[env=prod,plan=pro]`, `fmt` produces
 `flag a: on, rollout=10, rules=[env=prod, plan=pro]`.
 
 ## Status
 
-This is a first pass. `fmt` preserves comments and blank lines in place, but
-there's no way to write formatted output back to the file directly; you have
-to redirect stdout yourself. See the roadmap in the commit history for what's
-next.
+This is a first pass. There's no diff-style check mode yet for CI (`check`
+only validates, it doesn't report formatting drift), and the format has no
+concept of environment-scoped overrides. See the roadmap in the commit
+history for what's next.
 
 ## License
 
