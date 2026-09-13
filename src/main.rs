@@ -217,8 +217,81 @@ fn format_entries(entries: &[Entry]) -> String {
     out
 }
 
+// A line came from only the original, only the formatted output, or both
+// (in which case it's printed once as context instead of twice).
+enum DiffLine<'a> {
+    Context(&'a str),
+    Removed(&'a str),
+    Added(&'a str),
+}
+
+// Plain LCS diff. Flag files are small enough that the O(n*m) table is
+// irrelevant, and skipping a dependency for this is the whole point of the
+// project.
+fn diff_lines<'a>(a: &[&'a str], b: &[&'a str]) -> Vec<DiffLine<'a>> {
+    let n = a.len();
+    let m = b.len();
+    let mut lcs = vec![vec![0usize; m + 1]; n + 1];
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            lcs[i][j] = if a[i] == b[j] {
+                lcs[i + 1][j + 1] + 1
+            } else {
+                lcs[i + 1][j].max(lcs[i][j + 1])
+            };
+        }
+    }
+
+    let mut out = Vec::new();
+    let (mut i, mut j) = (0, 0);
+    while i < n && j < m {
+        if a[i] == b[j] {
+            out.push(DiffLine::Context(a[i]));
+            i += 1;
+            j += 1;
+        } else if lcs[i + 1][j] >= lcs[i][j + 1] {
+            out.push(DiffLine::Removed(a[i]));
+            i += 1;
+        } else {
+            out.push(DiffLine::Added(b[j]));
+            j += 1;
+        }
+    }
+    while i < n {
+        out.push(DiffLine::Removed(a[i]));
+        i += 1;
+    }
+    while j < m {
+        out.push(DiffLine::Added(b[j]));
+        j += 1;
+    }
+    out
+}
+
+fn render_diff(ops: &[DiffLine]) -> String {
+    let mut out = String::new();
+    for op in ops {
+        match op {
+            DiffLine::Context(l) => {
+                out.push_str("  ");
+                out.push_str(l);
+            }
+            DiffLine::Removed(l) => {
+                out.push_str("- ");
+                out.push_str(l);
+            }
+            DiffLine::Added(l) => {
+                out.push_str("+ ");
+                out.push_str(l);
+            }
+        }
+        out.push('\n');
+    }
+    out
+}
+
 fn usage(prog: &str) -> String {
-    format!("usage: {} <check|fmt> [--write] <path>", prog)
+    format!("usage: {} <check|fmt> [--write|--check] <path>", prog)
 }
 
 fn main() {
@@ -231,10 +304,13 @@ fn main() {
     let command = args[1].clone();
 
     let mut write_in_place = false;
+    let mut check_only = false;
     let mut path: Option<&str> = None;
     for arg in &args[2..] {
         if arg == "--write" {
             write_in_place = true;
+        } else if arg == "--check" {
+            check_only = true;
         } else if path.is_none() {
             path = Some(arg);
         } else {
@@ -251,6 +327,14 @@ fn main() {
     };
     if write_in_place && command != "fmt" {
         eprintln!("--write is only valid with 'fmt'");
+        process::exit(2);
+    }
+    if check_only && command != "fmt" {
+        eprintln!("--check is only valid with 'fmt'");
+        process::exit(2);
+    }
+    if write_in_place && check_only {
+        eprintln!("--write and --check cannot be used together");
         process::exit(2);
     }
 
@@ -277,7 +361,17 @@ fn main() {
         }
         "fmt" => {
             let formatted = format_entries(&entries);
-            if write_in_place {
+            if check_only {
+                if formatted == source {
+                    process::exit(0);
+                }
+                let original_lines: Vec<&str> = source.lines().collect();
+                let formatted_lines: Vec<&str> = formatted.lines().collect();
+                let diff = diff_lines(&original_lines, &formatted_lines);
+                print!("{}", render_diff(&diff));
+                eprintln!("{}: not formatted", path);
+                process::exit(1);
+            } else if write_in_place {
                 if let Err(e) = fs::write(path, &formatted) {
                     eprintln!("failed to write {}: {}", path, e);
                     process::exit(2);
@@ -388,5 +482,48 @@ mod tests {
             format_entries(&entries),
             "# checkout flags\n\nflag a: on\n# trailing note\n"
         );
+    }
+
+    #[test]
+    fn diff_lines_reports_no_changes_for_identical_input() {
+        let lines = vec!["a", "b", "c"];
+        let ops = diff_lines(&lines, &lines);
+        assert!(ops.iter().all(|op| matches!(op, DiffLine::Context(_))));
+    }
+
+    #[test]
+    fn diff_lines_marks_changed_line_as_removed_then_added() {
+        let a = vec!["flag a:on", "flag b: off"];
+        let b = vec!["flag a: on", "flag b: off"];
+        let ops = diff_lines(&a, &b);
+        assert!(matches!(ops[0], DiffLine::Removed("flag a:on")));
+        assert!(matches!(ops[1], DiffLine::Added("flag a: on")));
+        assert!(matches!(ops[2], DiffLine::Context("flag b: off")));
+    }
+
+    #[test]
+    fn render_diff_prefixes_each_line_kind() {
+        let ops = vec![
+            DiffLine::Removed("flag a:on"),
+            DiffLine::Added("flag a: on"),
+            DiffLine::Context("flag b: off"),
+        ];
+        assert_eq!(
+            render_diff(&ops),
+            "- flag a:on\n+ flag a: on\n  flag b: off\n"
+        );
+    }
+
+    #[test]
+    fn check_mode_detects_formatting_drift() {
+        let src = "flag a:on,rollout=10\n";
+        let entries = parse(src).unwrap();
+        let formatted = format_entries(&entries);
+        assert_ne!(formatted, src);
+
+        let original_lines: Vec<&str> = src.lines().collect();
+        let formatted_lines: Vec<&str> = formatted.lines().collect();
+        let diff = render_diff(&diff_lines(&original_lines, &formatted_lines));
+        assert_eq!(diff, "- flag a:on,rollout=10\n+ flag a: on, rollout=10\n");
     }
 }

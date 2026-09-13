@@ -64,12 +64,20 @@ cargo run -- fmt --write flags.txt
 Given `flag a:on,rollout=10,rules=[env=prod,plan=pro]`, `fmt` produces
 `flag a: on, rollout=10, rules=[env=prod, plan=pro]`.
 
+Pass `--check` instead to catch formatting drift in CI without touching the
+file: it exits 0 with no output if the file is already canonical, or prints
+a diff and exits 1 if it isn't.
+
+```
+cargo run -- fmt --check flags.txt
+```
+
+`--write` and `--check` are mutually exclusive.
+
 ## Status
 
-This is a first pass. There's no diff-style check mode yet for CI (`check`
-only validates, it doesn't report formatting drift), and the format has no
-concept of environment-scoped overrides. See the roadmap in the commit
-history for what's next.
+This is a first pass. The format has no concept of environment-scoped
+overrides yet. See the roadmap in the commit history for what's next.
 
 ## License
 
